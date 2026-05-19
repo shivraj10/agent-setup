@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: <SERVICE_NAME> deployment to AWS Lambda with API Gateway
+
+Parameters:
+  RuntimeEnvironment:
+    Type: String
+    Description: Runtime environment (dev, test, prod)
+    AllowedValues: [dev, test, prod]
+  LambdaIamRoleArn:
+    Type: String
+    Description: The ARN of the role assumed by the Lambda function
+  LambdaTimeout:
+    Type: Number
+    Description: Lambda execution timeout in seconds
+    Default: 900
+  LambdaMemorySize:
+    Type: Number
+    Description: Memory size for the Lambda function in MB
+    Default: 2048
+  AppSecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security Group IDs for VPC configuration
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for VPC configuration
+  StageName:
+    Type: String
+    Description: API Gateway stage name
+    Default: v1
+
+Resources:
+  # --- Secrets ---
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-${RuntimeEnvironment}-Secret'
+      Description: Application secrets
+      Tags:
+        - Key: apms-id
+          Value: APMS-XXXXX
+
+  # --- Lambda Layer ---
+  CoreDependencyLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub '${AWS::StackName}-${RuntimeEnvironment}-CoreDeps'
+      CompatibleRuntimes:
+        - python3.12
+      ContentUri: .
+      Description: Core Python dependencies
+    Metadata:
+      BuildMethod: makefile
+
+  # --- Lambda Function ---
+  AppFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-${RuntimeEnvironment}-Backend'
+      CodeUri: ./src/
+      Handler: main.handler
+      Runtime: python3.12
+      Role: !Ref LambdaIamRoleArn
+      Timeout: !Ref LambdaTimeout
+      MemorySize: !Ref LambdaMemorySize
+      VpcConfig:
+        SecurityGroupIds: !Ref AppSecurityGroupIds
+        SubnetIds: !Ref AppSubnetIds
+      Layers:
+        - !Ref CoreDependencyLayer
+      Environment:
+        Variables:
+          RuntimeEnvironment: !Ref RuntimeEnvironment
+          SecretManagerArn: !Ref AppSecret
+      Tags:
+        apms-id: APMS-XXXXX
+      Events:
+        RootPath:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+            RestApiId: !Ref AppApi
+
+  # --- API Gateway ---
+  AppApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-${RuntimeEnvironment}-Api'
+      StageName: !Ref StageName
+      Tags:
+        apms-id: APMS-XXXXX
+
+Outputs:
+  AppFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt AppFunction.Arn
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub 'https://${AppApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/'
